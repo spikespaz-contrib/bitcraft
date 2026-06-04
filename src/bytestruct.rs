@@ -81,7 +81,7 @@ macro_rules! bytestruct {
         $(#[$meta])*
         #[derive(Copy, Clone, PartialEq, Eq, Default)]
         #[derive($crate::bytemuck::Pod, $crate::bytemuck::Zeroable)]
-        #[repr(transparent)]
+        #[repr(C)]
         $vis struct $name(pub [$unit; $N]);
 
         impl core::fmt::Debug for $name {
@@ -129,7 +129,7 @@ macro_rules! bytestruct {
             $(#[$meta])*
             #[derive(Copy, Clone, PartialEq, Eq, Default)]
             #[derive($crate::bytemuck::Pod, $crate::bytemuck::Zeroable)]
-            #[repr(transparent)]
+            #[repr(C)]
             $vis struct $name(pub [$unit; $N]);
 
             impl core::fmt::Debug for $name {
@@ -167,7 +167,7 @@ macro_rules! bytestruct {
             $(#[$meta])*
             #[derive(Copy, Clone, PartialEq, Eq, Default)]
             #[derive($crate::bytemuck::Pod, $crate::bytemuck::Zeroable)]
-            #[repr(transparent)]
+            #[repr(C)]
             $vis struct $name(pub [$unit; $N]);
 
             impl core::fmt::Debug for $name {

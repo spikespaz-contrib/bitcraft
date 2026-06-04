@@ -2,7 +2,7 @@
 
 Choosing a bit manipulation library in Rust often involves balancing **Ergonomics**, **Compile-time Safety**, and **Runtime Performance**. This document compares `bitcraft` with other common solutions to help you decide which is right for your project.
 
-> **Fork note (spikespaz-contrib soft fork).** This fork tempers a few over-stated claims to match what the code actually does: the "no `syn`/`quote`" compile-speed claim (it's proc-macro-free only on the *field-codegen path* — `bytemuck`'s derive and `paste` still pull `syn`/`quote` into the tree), the "faster than manual code" framing (it compiles to the *same* shift/mask instructions → parity, not a speed-up), and the compile-time-bounds claim (structural bounds are `const`-asserted; per-*value* overflow via `set_*` is still a runtime `debug_assert!`). Code change in this fork: `bytestruct!`/`byteval!` now generate `#[repr(transparent)]` (single-field newtype over `[u8; N]`) instead of `#[repr(C)]`, making the documented transparency actually true.
+> **Fork note (spikespaz-contrib soft fork).** This fork tempers three genuinely over-stated claims, **with no code change**: the "no `syn`/`quote`" compile claim (the `bytemuck` derive + `paste` still pull `syn`/`quote` into the tree — it's proc-macro-free only on the *field-codegen path*), the "faster than manual code" framing (it compiles to the *same* shift/mask instructions → parity, not a speed-up), and the compile-time-bounds claim (structural bounds are `const`-asserted; per-*value* overflow via `set_*` is a runtime `debug_assert!`). The **C-FFI/ABI claim is correct** — `repr(C)` over `[u8; N]` is already a stable, layout-identical ABI; only the prose word "transparent" was loose (it meant *ABI*-transparency, not the Rust attribute), now clarified below.
 
 ## 📊 Feature Comparison Matrix
 
@@ -100,7 +100,7 @@ Standard Rust enums are **Algebraic Data Types**, which is dangerous when parsin
 
 If you are interfacing with C firmware or legacy network protocols, layout predictability is mandatory.
 
-* **ABI Stability**: Every `bitstruct!`, `bytestruct!`, and `bitenum!` is marked `#[repr(transparent)]`. This means they have the **exact same memory representation** as their underlying Rust primitive (u8-u128) or byte-array.
+* **ABI Stability**: The bit-packed types are `#[repr]`-pinned over their backing storage — `bitstruct!`/`bitenum!`/`bitarray!` are `#[repr(transparent)]` over a primitive (u8–u128), and `bytestruct!`/`byteval!` are `#[repr(C)]` over a `[u8; N]`. Either way they have the **exact same memory representation** as that underlying primitive or byte-array, so a raw C-originated pointer casts cleanly via `bytemuck`.
 * **Natural LSB-First**: Unlike many procedural macros that can be ambiguous about bit-ordering, `bitcraft` enforces a strict LSB-first mapping. This matches the standard layout of C bitfields on Little-Endian architectures (x86_64/ARM64), allowing you to safely cast raw C-originated pointers directly into Rust types using `bytemuck`.
 
 ### 6. `atomic_bitstruct!` & `atomic_bitenum!` vs. `Mutex`/`RwLock`
