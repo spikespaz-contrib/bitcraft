@@ -2,6 +2,8 @@
 
 Choosing a bit manipulation library in Rust often involves balancing **Ergonomics**, **Compile-time Safety**, and **Runtime Performance**. This document compares `bitcraft` with other common solutions to help you decide which is right for your project.
 
+> **Fork note (spikespaz-contrib soft fork).** This fork tempers a few over-stated claims to match what the code actually does: the "no `syn`/`quote`" compile-speed claim (it's proc-macro-free only on the *field-codegen path* — `bytemuck`'s derive and `paste` still pull `syn`/`quote` into the tree), the "faster than manual code" framing (it compiles to the *same* shift/mask instructions → parity, not a speed-up), and the compile-time-bounds claim (structural bounds are `const`-asserted; per-*value* overflow via `set_*` is still a runtime `debug_assert!`). Code change in this fork: `bytestruct!`/`byteval!` now generate `#[repr(transparent)]` (single-field newtype over `[u8; N]`) instead of `#[repr(C)]`, making the documented transparency actually true.
+
 ## 📊 Feature Comparison Matrix
 
 | Feature | standard Rust | `bitflags` | `modular-bitfield` | `packed_struct` | `bilge` | `bitvec` | `bitcraft` (this crate) |
@@ -30,7 +32,7 @@ Choosing a bit manipulation library in Rust often involves balancing **Ergonomic
 
 ## ⚡ Empirical Performance (1.0B Iterations)
 
-We evaluated 1,000,000,000 (1B) operations of complex read/write logic on an optimized release build. While other crates often introduce abstraction overhead, `bitcraft` maintains parity with—or exceeds—manual bitwise code.
+We evaluated 1,000,000,000 (1B) operations of complex read/write logic on an optimized release build. While some crates introduce abstraction overhead, `bitcraft` compiles down to the same shift/mask instructions as hand-written bitwise code, so it maintains **parity** with manual bitwise code — matching it, not beating it. The value is getting that hand-tuned performance for free behind a typed, bounds-checked API.
 
 | Metric | Macro Type | Overhead vs. `std` | Physical Density |
 | :--- | :--- | :--- | :--- |
@@ -55,7 +57,7 @@ We evaluated 32 concurrent threads performing 1,000,000 updates each on a shared
 > **Why the massive gap?** A `Mutex` forces threads into a queue, often requiring kernel context switches under high contention. `atomic_bitenum!` uses a single CPU instruction (`store`), while `atomic_bitstruct!` uses a lock-free `fetch_update` loop. Under high contention, the lock-free approach avoids the "Thundering Herd" problem and keeps the CPU pipeline saturated.
 
 
-> **Why are we faster than manual code?** Our macros generate perfectly unrolled bitwise expressions. Modern compilers (LLVM) recognize these patterns and perform **Instruction Fusion**, effectively turning multiple shifts/masks into a single **Unaligned Load** instruction. Standard loops or procedural-macro-generated getters often fail to reach this level of hardware optimization.
+> **Why do we match hand-written code?** Our macros generate the same unrolled shift/mask expressions you would write by hand, so LLVM applies the same **Instruction Fusion** (collapsing several shifts/masks into a single load). The result is *parity* with manual code — it compiles to identical instructions, so any "faster than manual" delta is measurement noise. The point is getting that hand-tuned codegen for free, behind a typed API, where a naive hand-written loop or a heavier procedural-macro getter might not fuse as cleanly.
 
 > [!NOTE]
 > **Type Safety**: `bitcraft` natively supports both **unsigned** (`u8` through `u128`) and **signed** (`i8` through `i128`) base integers for underlying storage, with strict compiler bounds (e.g., 15 bits for `i16`) to guarantee the sign bit is safely isolated. It also includes full support for interpreting the *fields and enums themselves* as signed integers (two's complement) via a branchless, zero-cost shift implementation.
@@ -69,7 +71,7 @@ We evaluated 32 concurrent threads performing 1,000,000 updates each on a shared
 `modular-bitfield` is the current ecosystem standard for procedural-macro-based bitfields.
 
 * **Philosophical Difference**: `modular-bitfield` focuses on providing a "Rust-like" struct feel with `#[bitfield]` attributes. `bitcraft` focuses on **Mechanical Sympathy**—optimizing specifically for how hardware interacts with memory registers.
-* **Compile Times**: `bitcraft` uses declarative `macro_rules!`, which compile significantly faster than procedural macros and don't require external crate dependencies like `syn` or `quote`.
+* **Compile Times**: `bitcraft`'s field codegen is declarative `macro_rules!`, which expands faster than a procedural macro. It is not `syn`/`quote`-free, though — the `bytemuck` derive and the `paste` helper still pull `syn`/`quote` into the dependency tree; there is simply no procedural macro on the field-generation path itself.
 * **Performance Routing**: While `modular-bitfield` handles bit-ranges well, `bitstruct!` specializes in **Acting Primitives**. It ensures that even if you are manipulating 5 bytes of data, the CPU uses a 64-bit register for atomic-like updates rather than byte-by-byte loads. In our benchmarks, this register-routing approach keeps overhead significantly lower than procedural field-accessors.
 
 ### 2. `bitcraft` vs. `packed_struct`
@@ -83,7 +85,7 @@ We evaluated 32 concurrent threads performing 1,000,000 updates each on a shared
 
 `bilge` is a modern, highly-typed procedural macro leveraging recent Rust `const` capabilities.
 
-* **Compilation Speed**: `bilge` heavily depends on procedural macros (`syn` / `quote`), significantly increasing build times, especially in smaller or embedded projects. `bitcraft` achieves similar `const` verification statically through purely declarative `macro_rules!`, yielding near-instant compilation.
+* **Compilation Speed**: `bilge` relies on a procedural macro (`bilge-impl`, which pulls `syn`-full + `quote`) on its codegen path. `bitcraft` achieves similar `const` verification through declarative `macro_rules!`, so its *own* field codegen needs no proc-macro — though it still pulls `syn`/`quote` indirectly via `bytemuck`'s derive. Net: a faster macro-expansion path, not a `syn`-free build.
 * **Array Support (`bytestruct!`)**: `bilge` is restricted to primitive integer bounds. `bitcraft` offers `bytestruct!` to provide `1` to `16` byte array packing with direct CPU-register promotion (Acting Primitives).
 * **Signed Types & Enums**: `bitcraft` provides Native Signed Enum capabilities `(i $bits)` right out of the box with zero boilerplate, dynamically performing zero-cost sign extensions upon read. `bilge` requires implementing custom traits for non-standard enum types.
 
@@ -140,7 +142,7 @@ Most bitfield libraries completely ignore concurrency. If you want to share a bi
 
 ### 🛡️ Compile-Time Bounds Checking (Zero Runtime Panic)
 
-Unlike other declarative macros that rely on `debug_assert!` at runtime to catch invalid bit assignments (like assigning a 3-bit enum variant to a 2-bit field), `bitcraft` automatically generates `const _: () = assert!(...);` validations. This means if your structural logic is flawed, your code **will not compile**, preventing hidden runtime panics entirely.
+`bitcraft` generates `const _: () = assert!(...);` validations for **structural** bounds — total field bits ≤ the base width, and an enum's width ≤ the field it's assigned to — so a structurally-flawed layout **will not compile**. This covers *structure*, not every *value*: assigning an out-of-range value to a field via `set_*` is still caught by a runtime `debug_assert!`, not at compile time. Use the checked `try_set_*` / `try_with_*` setters to handle out-of-range values without a panic.
 
 ### 🧩 LSB-First Consistency
 
